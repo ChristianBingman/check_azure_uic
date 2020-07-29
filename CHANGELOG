@@ -1,0 +1,12 @@
+## Release 1.0
+### Summary
+
+Release version 1.0. This script now supports fairly easy adding of APIs as well as fixing the issues presented in check_azure.
+
+### Major Features
+- Replace check_azure basic kubernetes functions
+- Create templates
+
+### Bugfixes
+- Fix random str conversion errors
+- Implement basic checking on user inputted information

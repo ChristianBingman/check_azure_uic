@@ -1,0 +1,373 @@
+#!/usr/local/bin/python3
+
+#####################
+# File: az_kube_health
+# Author: Christian Bingman
+# Description: The intent is to replace the existing opsview chech_azure plugin due to it longer longer working properly
+#   when trying to access the aks health.
+#####################
+
+# Command Example
+import requests
+import sys
+from optparse import OptionParser
+import math
+
+# Request Function Template
+'''
+    api_version = <API Version>
+    # Set auth header
+    azure_header = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Set parameters for Azure
+    metricParams = <parameters for filter>
+
+    # Ensure URL is correct and accessible
+    try:
+        r = requests.get(
+            <Request URL>,
+            headers=azure_header)
+    except ConnectionError as e:
+        nagios_out("Could not connect - " + e, 3)
+    except TimeoutError:
+        nagios_out("Connection timed out", 3)
+
+    if r.status_code != 200:
+        nagios_out("Unsuccessful request, status: " + r.status_code + ", error: " + r.json(), 3)
+
+    return_data = r.json()
+
+    # If this is throwing errors, then most likely your time range is invalid
+    try:
+        # Extract JSON Data
+    except ValueError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+    except IndexError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+
+    if extracted_value <= critical_limit:
+        # Warning limit action
+    elif extracted_value <= warning_limit:
+        # Critical limit action
+
+    # OK limit action
+'''
+
+def get_api_key(clientId, clientSecret, tenantId):
+    rParams = {
+        "grant_type": "client_credentials",
+        "client_id": clientId,
+        "client_secret": clientSecret,
+        "resource": "https://management.azure.com/"
+    }
+
+    # Ensure URL is correct and accessible
+    try:
+        r = requests.post(f"https://login.microsoftonline.com/{tenantId}/oauth2/token", data=rParams)
+    except ConnectionError as e:
+        nagios_out("Could not connect - " + e, 3)
+    except TimeoutError:
+        nagios_out("Connection timed out", 3)
+
+    if r.status_code != 200:
+        nagios_out("Unsuccessful api key request, status: " + str(r.status_code) + ", error: " + str(r.json()), 3)
+
+    try:
+        return_data = r.json()
+        return return_data["access_token"]
+    except ValueError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+    except IndexError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+
+
+# Define Azure Actions
+def Az_Container_Serv_Kube_CPU(resource_group, resource_name, auth_token, subscriptionId, warning_limit = 3, critical_limit = 0):
+    api_version = "2018-01-01"
+    # Set auth header
+    azure_header = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Set parameters for Azure
+    metricParams = "metricnames=kube_node_status_allocatable_cpu_cores&aggregation=Total&interval=PT5M"
+
+    # Ensure URL is correct and accessible
+    try:
+        r = requests.get(
+            f"https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resource_group}/providers/Microsoft.ContainerService/managedClusters/{resource_name}/providers/microsoft.insights/metrics?{metricParams}&api-version={api_version}",
+            headers=azure_header)
+    except ConnectionError as e:
+        nagios_out("Could not connect - " + str(e), 3)
+    except TimeoutError:
+        nagios_out("Connection timed out", 3)
+
+    if r.status_code != 200:
+        nagios_out("Unsuccessful request, status: " + str(r.status_code) + ", error: " + str(r.json()), 3)
+
+    # If this is throwing errors, then most likely your time range is invalid
+    try:
+        return_data = r.json()
+        CPU_avail = return_data["value"][0]["timeseries"][0]["data"][0]["total"]
+    except ValueError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+    except IndexError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+
+    if CPU_avail <= critical_limit:
+        nagios_out(f"Cluster Health: CPU Cores Available - {CPU_avail} - Critical Limit Reached", 2)
+    elif CPU_avail <= warning_limit:
+        nagios_out(f"Cluster Health: CPU Cores Available - {CPU_avail} - Warning Limit Reached", 1)
+
+    nagios_out(f"Cluster Health: CPU Cores Available - {CPU_avail}", 0)
+
+
+def Az_Container_serv_Kube_Condition(resource_group, resource_name, auth_token, subscriptionId, warning_limit = 50, critical_limit = 25):
+    totalNodeCount = 0
+    api_version = "2018-01-01"
+    # Set auth header
+    azure_header = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Set parameters for Azure
+    metricParams = f"metricnames=kube_node_status_condition&aggregation=Total&$filter=condition eq 'Ready'&interval=PT5M"
+
+
+    try:
+        r = requests.get(
+            f"https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resource_group}/providers/Microsoft.ContainerService/managedClusters/{resource_name}?api-version=2020-06-01",
+            headers=azure_header)
+    except ConnectionError as e:
+        nagios_out("Could not connect - " + str(e), 3)
+    except TimeoutError:
+        nagios_out("Connection timed out", 3)
+
+    if r.status_code != 200:
+        nagios_out("Unsuccessful request, status: " + str(r.status_code) + ", error: " + str(r.json()), 3)
+
+    try:
+        getTotalNodesJson = r.json()
+        totalNodeCount = getTotalNodesJson["properties"]["agentPoolProfiles"][0]["count"]
+    except ValueError:
+        nagios_out("Error parsing JSON return - " + getTotalNodesJson, 2)
+    except IndexError:
+        nagios_out("Error parsing JSON return - " + getTotalNodesJson, 2)
+
+    # Ensure URL is correct and accessible
+    try:
+        r = requests.get(
+            f"https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resource_group}/providers/Microsoft.ContainerService/managedClusters/{resource_name}/providers/microsoft.insights/metrics?{metricParams}&api-version={api_version}",
+            headers=azure_header)
+    except ConnectionError as e:
+        nagios_out("Could not connect - " + e, 3)
+    except TimeoutError:
+        nagios_out("Connection timed out", 3)
+
+    if r.status_code != 200:
+        nagios_out("Unsuccessful request, status: " + str(r.status_code) + ", error: " + str(r.json()), 3)
+
+    # If this is throwing errors, then most likely your time range is invalid
+    try:
+        kubernetes_status = r.json()
+        num_ready = kubernetes_status["value"][0]["timeseries"][0]["data"][0]["total"]
+        perc_ready = (totalNodeCount / num_ready) * 100
+    except ValueError:
+        nagios_out("Error parsing JSON return - " + kubernetes_status, 2)
+    except IndexError:
+        nagios_out("Error parsing JSON return - " + kubernetes_status, 2)
+
+    if perc_ready <= critical_limit:
+        nagios_out(f"Cluster Health: Containers up - {perc_ready}% - Below Critical Threshold", 2)
+    elif perc_ready <= warning_limit:
+        nagios_out(f"Cluster Health: Containers up - {perc_ready}% - Below Warning Threshold", 1)
+
+    nagios_out(f"Cluster Health: Containers up - {perc_ready}%", 0)
+
+
+def convert_size(size_bytes):
+    # Thanks James Sapam - Stack Overflow
+   if size_bytes == 0:
+       return "0B"
+   size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+   i = int(math.floor(math.log(size_bytes, 1024)))
+   p = math.pow(1024, i)
+   s = round(size_bytes / p, 2)
+   return "%s %s" % (s, size_name[i])
+
+def Az_Container_Serv_Kube_Memory(resource_group, resource_name, auth_token, subscriptionId, warning_limit = 1000000000, critical_limit = 10000):
+    api_version = "2018-01-01"
+    # Set auth header
+    azure_header = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Set parameters for Azure
+    metricParams = "metricnames=kube_node_status_allocatable_memory_bytes&aggregation=total&interval=PT5M"
+
+    # Ensure URL is correct and accessible
+    try:
+        r = requests.get(
+            f"https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resource_group}/providers/Microsoft.ContainerService/managedClusters/{resource_name}/providers/microsoft.insights/metrics?{metricParams}&api-version={api_version}",
+            headers=azure_header)
+    except ConnectionError as e:
+        nagios_out("Could not connect - " + str(e), 3)
+    except TimeoutError:
+        nagios_out("Connection timed out", 3)
+
+    if r.status_code != 200:
+        nagios_out("Unsuccessful request, status: " + str(r.status_code) + ", error: " + str(r.json()), 3)
+
+    # If this is throwing errors, then most likely your time range is invalid
+    try:
+        return_data = r.json()
+        memory_avail = return_data["value"][0]["timeseries"][0]["data"][0]["total"]
+    except ValueError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+    except IndexError:
+        nagios_out("Error parsing JSON return - " + return_data, 2)
+
+    if memory_avail <= critical_limit:
+        nagios_out(f"Cluster Health: Memory Available - {convert_size(memory_avail)} - Critical Limit Reached", 2)
+    elif memory_avail <= warning_limit:
+        nagios_out(f"Cluster Health: Memory Available - {convert_size(memory_avail)} - Warning Limit Reached", 1)
+
+    nagios_out(f"Cluster Health: Memory Available - {convert_size(memory_avail)}", 0)
+
+
+def Az_Container_Serv_Kube_Pods_Ready(resource_group, resource_name, auth_token, subscriptionId, warning_limit = 5, critical_limit = 3):
+    api_version = "2018-01-01"
+    # Set auth header
+    azure_header = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+
+    # Set parameters for Azure
+    metricParams = f"metricnames=kube_pod_status_ready&aggregation=Average&interval=PT5M"
+
+    # Ensure URL is correct and accessible
+    try:
+        r = requests.get(
+            f"https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resource_group}/providers/Microsoft.ContainerService/managedClusters/{resource_name}/providers/microsoft.insights/metrics?{metricParams}&api-version={api_version}",
+            headers=azure_header)
+    except ConnectionError as e:
+        nagios_out("Could not connect - " + str(e), 3)
+    except TimeoutError:
+        nagios_out("Connection timed out", 3)
+
+    if r.status_code != 200:
+        nagios_out("Unsuccessful request, status: " + str(r.status_code) + ", error: " + str(r.json()), 3)
+
+    # If this is throwing errors, then most likely your time range is invalid
+    try:
+        kubernetes_status = r.json()
+        num_ready = kubernetes_status["value"][0]["timeseries"][0]["data"][0]["average"]
+    except ValueError:
+        nagios_out("Error parsing JSON return - " + kubernetes_status, 2)
+    except IndexError:
+        nagios_out("Error parsing JSON return - " + kubernetes_status, 2)
+
+    if num_ready <= critical_limit:
+        nagios_out(f"Cluster Health: Containers ready - {num_ready} - Below Critical Threshold", 2)
+    elif num_ready <= warning_limit:
+        nagios_out(f"Cluster Health: Containers ready - {num_ready} - Below Warning Threshold", 1)
+
+    nagios_out(f"Cluster Health: Containers ready - {num_ready}", 0)
+
+
+def nagios_out(message, status_code):
+    if status_code == 0:
+        print("OK - " + message)
+        sys.exit(0)
+    elif status_code == 1:
+        print("WARNING - " + message)
+        sys.exit(1)
+    elif status_code == 2:
+        print("CRITICAL - " + message)
+        sys.exit(2)
+    else:
+        print("UNKNOWN - " + message)
+        sys.exit(3)
+
+
+usage = f"usage: check_azure_uic -m MODE [-h] (Optional Arguments)" \
+        f"\nMonitors Microsoft Azure UIC:" \
+        f"\n\nValid Modes:" \
+        f"\nAz.Container.Serv.Kube.CPU" \
+        f"\nAz.Container.Serv.Kube.Condition" \
+        f"\nAz.Container.Serv.Kube.Memory" \
+        f"\nAz.Container.Serv.Kube.Pods.Ready"
+
+# Add new options here
+parser = OptionParser(usage)
+parser.add_option("-c", "--critical", dest="critical_limit")
+parser.add_option("-w", "--warning", dest="warning_limit")
+parser.add_option("-m", "--mode", dest="mode", help="Required Argument - Defines Mode")
+parser.add_option("--tenant-id", dest="tenant_id", help="Azure Tenant ID")
+parser.add_option("--client-id", dest="client_id", help="Azure Client ID")
+parser.add_option("--secret-key", dest="secret_key", help="Azure Secret Key")
+parser.add_option("--subscription-id", dest="subscription_id", help="Azure Subscription ID")
+parser.add_option("--resource-group", dest="resource_group", help="Azure Resource Group ID")
+parser.add_option("--resource-name", dest="resource_name", help="Azure Resource Name")
+
+# Parse Arguments Here
+(options, args) = parser.parse_args()
+critical_limit = options.critical_limit
+warning_limit = options.warning_limit
+mode = options.mode
+tenantId = options.tenant_id
+clientId = options.client_id
+clientSecret = options.secret_key
+subscriptionId = options.subscription_id
+resource_group = options.resource_group
+resource_name = options.resource_name
+
+# Check for required arguments before calling function
+if mode is None or clientId is None or clientSecret is None or tenantId is None:
+    nagios_out("Needs arguments mode, client-id, secret-key, tenant-id", 3)
+
+api_key = get_api_key(clientId, clientSecret, tenantId)
+
+# Add new modes here
+if mode == "Az.Container.Serv.Kube.CPU":
+    if resource_name is None or resource_group is None:
+        nagios_out("Mode requires resource-name, resource-group", 3)
+    elif warning_limit is not None and critical_limit is not None:
+        Az_Container_Serv_Kube_CPU(resource_group, resource_name, api_key, subscriptionId, warning_limit, critical_limit)
+    else:
+        Az_Container_Serv_Kube_CPU(resource_group, resource_name, api_key, subscriptionId)
+elif mode == "Az.Container.Serv.Kube.Condition":
+    if resource_name is None or resource_group is None:
+        nagios_out("Mode requires resource-name, resource-group", 3)
+    elif warning_limit is not None and critical_limit is not None:
+        Az_Container_serv_Kube_Condition(resource_group, resource_name, api_key, subscriptionId, warning_limit, critical_limit)
+    else:
+        Az_Container_serv_Kube_Condition(resource_group, resource_name, api_key, subscriptionId)
+elif mode == "Az.Container.Serv.Kube.Memory":
+    if resource_name is None or resource_group is None:
+        nagios_out("Mode requires resource-name, resource-group", 3)
+    elif warning_limit is not None and critical_limit is not None:
+        Az_Container_Serv_Kube_Memory(resource_group, resource_name, api_key, subscriptionId, warning_limit, critical_limit)
+    else:
+        Az_Container_Serv_Kube_Memory(resource_group, resource_name, api_key, subscriptionId)
+elif mode == "Az.Container.Serv.Kube.Pods.Ready":
+    if resource_name is None or resource_group is None:
+        nagios_out("Mode requires resource-name, resource-group", 3)
+    elif warning_limit is not None and critical_limit is not None:
+        Az_Container_Serv_Kube_Pods_Ready(resource_group, resource_name, api_key, subscriptionId, warning_limit, critical_limit)
+    else:
+        Az_Container_Serv_Kube_Pods_Ready(resource_group, resource_name, api_key, subscriptionId)
+else:
+    nagios_out("Error: Mode Invalid!", 2)

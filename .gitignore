@@ -1,0 +1,7 @@
+/.idea/.gitignore
+/.idea/az_kube_health.iml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/vcs.xml
+/check_azure_uic
